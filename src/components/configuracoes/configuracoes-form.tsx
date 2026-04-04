@@ -447,9 +447,11 @@ function ServiceCard({
         persistStatus('error')
         toast.error(`${service.title}: falha`, { description: data.error })
       }
-    } catch {
+    } catch (err) {
       persistStatus('error')
-      toast.error(`${service.title}: erro ao testar`)
+      toast.error(`${service.title}: erro ao testar`, {
+        description: err instanceof Error ? err.message : 'Verifique o console do navegador (F12)',
+      })
     }
   }
 
