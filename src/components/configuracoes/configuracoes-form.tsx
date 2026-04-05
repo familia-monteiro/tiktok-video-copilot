@@ -167,21 +167,27 @@ export function ConfiguracoesForm() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ configs: toSave }),
     })
-    const data = await res.json() as SaveResult
+    const data = await res.json() as SaveResult & { error?: string }
+
+    if (!res.ok) {
+      toast.error('Erro ao salvar', { description: data.error ?? `HTTP ${res.status}` })
+      return false
+    }
 
     if (data.erros && data.erros.length > 0) {
       toast.error('Erros ao salvar', { description: data.erros.join('\n') })
     }
-    if (data.atualizados.length > 0) {
-      toast.success(`${data.atualizados.length} campo(s) salvo(s)`)
+    const atualizados = data.atualizados ?? []
+    if (atualizados.length > 0) {
+      toast.success(`${atualizados.length} campo(s) salvo(s)`)
       setDirty((prev) => {
         const next = new Set(prev)
-        data.atualizados.forEach((c) => next.delete(c))
+        atualizados.forEach((c) => next.delete(c))
         return next
       })
       setValues((prev) => {
         const next = { ...prev }
-        data.atualizados.forEach((c) => { next[c] = '' })
+        atualizados.forEach((c) => { next[c] = '' })
         return next
       })
       await loadConfigs()
@@ -193,8 +199,6 @@ export function ConfiguracoesForm() {
   if (loading) {
     return <p className="text-sm text-muted-foreground p-4">Carregando configurações...</p>
   }
-
-  const otherDirty = OTHER_CONFIGS.some((f) => dirty.has(f.chave) && values[f.chave]?.trim())
 
   return (
     <div className="space-y-4">
@@ -236,7 +240,6 @@ export function ConfiguracoesForm() {
           <div className="pt-1">
             <SaveButton
               chaves={OTHER_CONFIGS.map((f) => f.chave)}
-              hasDirty={otherDirty}
               onSave={saveFields}
             />
           </div>
@@ -367,10 +370,9 @@ function ConfigField({
 }
 
 function SaveButton({
-  chaves, hasDirty, onSave,
+  chaves, onSave,
 }: {
   chaves: string[]
-  hasDirty: boolean
   onSave: (chaves: string[]) => Promise<boolean>
 }) {
   const [saving, setSaving] = useState(false)
@@ -381,7 +383,7 @@ function SaveButton({
   }
 
   return (
-    <Button size="sm" onClick={handleSave} disabled={saving || !hasDirty} className="text-xs h-8">
+    <Button size="sm" onClick={handleSave} disabled={saving} className="text-xs h-8">
       {saving ? 'Salvando...' : 'Salvar'}
     </Button>
   )
