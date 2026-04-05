@@ -17,17 +17,10 @@
 
 import { inngest } from '@/lib/inngest/client'
 import { supabaseAdmin } from '@/lib/supabase/server'
-import {
-  launchBrowser,
-  saveProfileState,
-  selectProfile,
-  getProxyConfig,
-} from '@/lib/scraper/browser'
-import {
-  scrapeTikTokProfile,
-  type VideoMetadata,
-} from '@/lib/scraper/tiktok-scraper'
-import { warmupProfile } from '@/lib/scraper/human-behavior'
+
+// Imports de scraper são lazy para evitar bundling de playwright no Vercel
+// (esses módulos só rodam no worker da VPS via Inngest, nunca no serverless da Vercel)
+type VideoMetadata = import('@/lib/scraper/tiktok-scraper').VideoMetadata
 
 const MAX_VIDEOS_PER_RUN = 500   // Seção 7: limite de segurança
 const CHECKPOINT_INTERVAL = 50  // Seção 7: checkpoint a cada 50 vídeos
@@ -94,6 +87,10 @@ export const scrapeDiscoverInitial = inngest.createFunction(
     while (hasMore && totalCollected < MAX_VIDEOS_PER_RUN) {
       batchNumber++
       const batchResult = await step.run(`scrape-batch-${batchNumber}`, async () => {
+        const { launchBrowser, saveProfileState, selectProfile, getProxyConfig } = await import('@/lib/scraper/browser')
+        const { scrapeTikTokProfile } = await import('@/lib/scraper/tiktok-scraper')
+        const { warmupProfile } = await import('@/lib/scraper/human-behavior')
+
         const proxyConfig = await getProxyConfig()
         const profileId = selectProfile(influencer_id)
 

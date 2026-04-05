@@ -15,13 +15,8 @@
 
 import { inngest } from '@/lib/inngest/client'
 import { supabaseAdmin } from '@/lib/supabase/server'
-import {
-  launchBrowser,
-  saveProfileState,
-  selectProfile,
-  getProxyConfig,
-} from '@/lib/scraper/browser'
-import { scrapeTikTokProfile } from '@/lib/scraper/tiktok-scraper'
+
+// Imports de scraper são lazy para evitar bundling de playwright no Vercel
 
 export const scrapeDiscoverMonitor = inngest.createFunction(
   {
@@ -67,6 +62,9 @@ export const scrapeDiscoverMonitor = inngest.createFunction(
           const knownIds = new Set(
             (knownIdsResult.data || []).map((v: { tiktok_video_id: string }) => v.tiktok_video_id)
           )
+
+          const { launchBrowser, saveProfileState, selectProfile, getProxyConfig } = await import('@/lib/scraper/browser')
+          const { scrapeTikTokProfile } = await import('@/lib/scraper/tiktok-scraper')
 
           const proxyConfig = await getProxyConfig()
           const profileId = selectProfile(influencer.id)
