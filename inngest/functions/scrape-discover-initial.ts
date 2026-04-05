@@ -1,37 +1,56 @@
 /**
  * Job: scrape.discover.initial
- * Coleta histórica completa de um influenciador.
+ * Coleta histórica completa de um influenciador via worker VPS.
  *
  * Referência: Seções 4, 5, 6, 7 do Master Plan v3.0
  *
- * Comportamento:
- * - Playwright + playwright-extra + stealth + Proxy Decodo
- * - Comportamento humano sintético: delays distribuição normal, scroll bezier,
- *   fadiga após 20 ações, pausas periódicas (Seção 5 Vetor 3)
- * - Checkpoint a cada 50 vídeos no campo `checkpoint_scraping`
- * - Deduplicação por `tiktok_video_id`
- * - Máximo 500 vídeos por execução
- * - Detecção de CAPTCHA + insert em `captcha_alerts` + Supabase Realtime
- * - Ao concluir: dispara jobs `media.download.normal` para todos os novos vídeos
+ * Fluxo:
+ * 1. Envia requisição de scraping para o worker VPS (https://scraper.superapps.ai)
+ * 2. Aguarda callback assíncrono via step.waitForEvent('scrape/batch.complete')
+ * 3. Insere vídeos descobertos, salva checkpoint e dispara downloads
+ * 4. Repete até esgotar vídeos ou atingir o limite de 500
+ *
+ * O worker VPS executa Playwright + playwright-extra + stealth + Proxy Decodo
+ * com comportamento humano sintético conforme Seção 5 do Master Plan.
  */
 
 import { inngest } from '@/lib/inngest/client'
 import { supabaseAdmin } from '@/lib/supabase/server'
 
-// Imports de scraper são lazy para evitar bundling de playwright no Vercel
-// (esses módulos só rodam no worker da VPS via Inngest, nunca no serverless da Vercel)
-type VideoMetadata = import('@/lib/scraper/tiktok-scraper').VideoMetadata
+type VideoMetadata = {
+  tiktok_video_id: string
+  url: string
+  thumbnail_url: string
+  views: number
+  data_publicacao: string | null
+}
 
-const MAX_VIDEOS_PER_RUN = 500   // Seção 7: limite de segurança
-const CHECKPOINT_INTERVAL = 50  // Seção 7: checkpoint a cada 50 vídeos
+type PageState = {
+  scroll_position: number
+  last_video_id: string | null
+  has_more: boolean
+}
+
+type ScrapeBatchResult = {
+  job_id: string
+  influencer_id: string
+  success: boolean
+  videos: VideoMetadata[]
+  page_state?: PageState
+  captcha_detected: boolean
+  error?: string
+}
+
+const MAX_VIDEOS_PER_RUN = 500
+const CHECKPOINT_INTERVAL = 50
 
 export const scrapeDiscoverInitial = inngest.createFunction(
   {
     id: 'scrape-discover-initial',
     name: 'Scrape: Coleta Histórica Inicial',
-    retries: 0, // Gerenciado internamente via checkpoint
+    retries: 0,
     concurrency: {
-      limit: 2, // Máximo 2 sessões simultâneas (Seção 5 Vetor 4)
+      limit: 2,
     },
     triggers: [{ event: 'scrape/discover.initial' }],
   },
@@ -39,7 +58,7 @@ export const scrapeDiscoverInitial = inngest.createFunction(
     const { influencer_id } = event.data as { influencer_id: string }
 
     // -----------------------------------------------------------------------
-    // 1. Carregar influenciador e checkpoint
+    // 1. Carregar influenciador e atualizar status para 'descobrindo'
     // -----------------------------------------------------------------------
     const influencer = await step.run('load-influencer', async () => {
       const { data, error } = await supabaseAdmin
@@ -50,7 +69,6 @@ export const scrapeDiscoverInitial = inngest.createFunction(
 
       if (error || !data) throw new Error(`Influenciador não encontrado: ${influencer_id}`)
 
-      // Atualizar status para 'descobrindo'
       await supabaseAdmin
         .from('influenciadores')
         .update({ status_pipeline: 'descobrindo', modo_atual: 'inicial' })
@@ -60,8 +78,7 @@ export const scrapeDiscoverInitial = inngest.createFunction(
     })
 
     // -----------------------------------------------------------------------
-    // 2. Carregar IDs de vídeos já existentes no banco (para deduplicação)
-    // step.run deve retornar dados serializáveis em JSON — usar array, não Set
+    // 2. Carregar IDs já existentes para deduplicação
     // -----------------------------------------------------------------------
     const existingIdsArray = await step.run('load-existing-ids', async (): Promise<string[]> => {
       const { data } = await supabaseAdmin
@@ -73,8 +90,7 @@ export const scrapeDiscoverInitial = inngest.createFunction(
     })
 
     // -----------------------------------------------------------------------
-    // 3. Executar scraping em batches de CHECKPOINT_INTERVAL vídeos
-    //    Cada step.run é uma invocação separada — tolerante a falhas
+    // 3. Executar scraping em batches via worker VPS
     // -----------------------------------------------------------------------
     const checkpoint = (influencer.checkpoint_scraping || {}) as Record<string, unknown>
     let totalCollected = 0
@@ -84,53 +100,64 @@ export const scrapeDiscoverInitial = inngest.createFunction(
     let lastVideoId: string | null = typeof checkpoint.ultimo_video_id === 'string' ? checkpoint.ultimo_video_id : null
     const allKnownIds = new Set<string>(existingIdsArray)
 
+    const scraperUrl = process.env.SCRAPER_WORKER_URL ?? 'https://scraper.superapps.ai'
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://roteiros.tiktok.superapps.ai'
+    const callbackUrl = `${siteUrl}/api/internal/scrape-complete`
+
     while (hasMore && totalCollected < MAX_VIDEOS_PER_RUN) {
       batchNumber++
-      const batchResult = await step.run(`scrape-batch-${batchNumber}`, async () => {
-        const { launchBrowser, saveProfileState, selectProfile, getProxyConfig } = await import('@/lib/scraper/browser')
-        const { scrapeTikTokProfile } = await import('@/lib/scraper/tiktok-scraper')
-        const { warmupProfile } = await import('@/lib/scraper/human-behavior')
 
-        const proxyConfig = await getProxyConfig()
-        const profileId = selectProfile(influencer_id)
+      // Enviar requisição para o worker VPS e obter job_id
+      const jobId = await step.run(`call-scraper-${batchNumber}`, async () => {
+        const id = crypto.randomUUID()
 
-        const { browser, context } = await launchBrowser(profileId, proxyConfig)
+        const res = await fetch(`${scraperUrl}/scrape`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-worker-secret': process.env.SCRAPER_WORKER_SECRET ?? '',
+          },
+          body: JSON.stringify({
+            job_id: id,
+            influencer_id,
+            handle: influencer.tiktok_handle,
+            mode: 'initial',
+            max_videos: CHECKPOINT_INTERVAL,
+            resume_scroll_y: resumeScrollY,
+            known_video_ids: Array.from(allKnownIds),
+            callback_url: callbackUrl,
+          }),
+        })
 
-        try {
-          // Aquecimento apenas para perfil novo (sem storage state)
-          const isNewProfile = batchNumber === 1
-          if (isNewProfile) {
-            const page = await context.newPage()
-            await warmupProfile(page as any)
-            await page.close()
-          }
-
-          const result = await scrapeTikTokProfile(
-            context as any,
-            influencer.tiktok_handle,
-            {
-              max_videos: CHECKPOINT_INTERVAL,
-              resume_scroll_y: resumeScrollY,
-              known_video_ids: allKnownIds,
-              mode: 'initial',
-            }
-          )
-
-          // Salvar estado do perfil (cookies, localStorage)
-          await saveProfileState(context as any, profileId)
-
-          return result
-        } finally {
-          await browser.close()
+        if (!res.ok) {
+          const text = await res.text().catch(() => '')
+          throw new Error(`Worker VPS retornou ${res.status}: ${text}`)
         }
+
+        return id
       })
+
+      // Aguardar callback assíncrono do worker VPS (máx 15 minutos)
+      const batchEvent = await step.waitForEvent(`wait-scraper-${batchNumber}`, {
+        event: 'scrape/batch.complete',
+        timeout: '15m',
+        if: `async.data.job_id == "${jobId}"`,
+      })
+
+      if (!batchEvent) {
+        throw new Error(
+          `Timeout: worker VPS não respondeu em 15min para batch ${batchNumber} ` +
+          `de @${influencer.tiktok_handle}`
+        )
+      }
+
+      const batchResult = batchEvent.data as ScrapeBatchResult
 
       // -------------------------------------------------------------------
       // 3a. Tratar CAPTCHA
       // -------------------------------------------------------------------
       if (batchResult.captcha_detected) {
         await step.run('handle-captcha', async () => {
-          // Salvar estado atual como checkpoint
           await supabaseAdmin
             .from('influenciadores')
             .update({
@@ -142,7 +169,6 @@ export const scrapeDiscoverInitial = inngest.createFunction(
             })
             .eq('id', influencer_id)
 
-          // Inserir alerta de CAPTCHA
           const { data: job } = await supabaseAdmin
             .from('jobs_pipeline')
             .select('id')
@@ -164,22 +190,24 @@ export const scrapeDiscoverInitial = inngest.createFunction(
                 batch_number: batchNumber,
               },
             })
-
-          // Supabase Realtime dispara automaticamente para o frontend
         })
 
-        // Pausar job — aguardar resolução manual do CAPTCHA
-        // O operador deve resolver o CAPTCHA e re-disparar o evento
         throw new Error(
           `CAPTCHA detectado durante scraping de @${influencer.tiktok_handle}. ` +
           `Checkpoint salvo. Resolva o CAPTCHA no dashboard e o job retomará.`
         )
       }
 
+      if (!batchResult.success) {
+        throw new Error(
+          `Worker VPS reportou falha no batch ${batchNumber}: ${batchResult.error ?? 'erro desconhecido'}`
+        )
+      }
+
       // -------------------------------------------------------------------
-      // 3b. Inserir novos vídeos no banco e atualizar IDs conhecidos
+      // 3b. Inserir novos vídeos
       // -------------------------------------------------------------------
-      const newVideos = batchResult.videos.filter(
+      const newVideos = (batchResult.videos ?? []).filter(
         (v) => !allKnownIds.has(v.tiktok_video_id)
       )
 
@@ -195,14 +223,12 @@ export const scrapeDiscoverInitial = inngest.createFunction(
             status: 'aguardando',
           }))
 
-          // Inserir com upsert — deduplicação garantida pela constraint UNIQUE
           const { error } = await supabaseAdmin
             .from('videos')
             .upsert(rows, { onConflict: 'influencer_id,tiktok_video_id', ignoreDuplicates: true })
 
           if (error) throw new Error(`Falha ao inserir vídeos: ${error.message}`)
 
-          // Adicionar novos IDs ao conjunto de conhecidos
           for (const v of newVideos) allKnownIds.add(v.tiktok_video_id)
 
           return newVideos.length
@@ -210,12 +236,18 @@ export const scrapeDiscoverInitial = inngest.createFunction(
       }
 
       // -------------------------------------------------------------------
-      // 3c. Salvar checkpoint a cada batch (a cada ~50 vídeos — Seção 7)
+      // 3c. Atualizar estado e salvar checkpoint
       // -------------------------------------------------------------------
       totalCollected += newVideos.length
-      resumeScrollY = batchResult.page_state.scroll_position
-      lastVideoId = batchResult.page_state.last_video_id
-      hasMore = batchResult.page_state.has_more
+
+      const pageState = batchResult.page_state ?? {
+        scroll_position: resumeScrollY,
+        last_video_id: lastVideoId,
+        has_more: false,
+      }
+      resumeScrollY = pageState.scroll_position
+      lastVideoId = pageState.last_video_id
+      hasMore = pageState.has_more
 
       await step.run(`checkpoint-batch-${batchNumber}`, async () => {
         await supabaseAdmin
@@ -232,12 +264,10 @@ export const scrapeDiscoverInitial = inngest.createFunction(
       })
 
       // -------------------------------------------------------------------
-      // 3d. Disparar jobs de download para os novos vídeos (em batch)
-      //     Referência: Seção 7 — "disparar jobs de download para todos os novos vídeos"
+      // 3d. Disparar downloads para os novos vídeos
       // -------------------------------------------------------------------
       if (newVideos.length > 0) {
         await step.run(`dispatch-downloads-batch-${batchNumber}`, async () => {
-          // Buscar IDs dos vídeos recém inseridos
           const { data: insertedVideos } = await supabaseAdmin
             .from('videos')
             .select('id, tiktok_video_id')
@@ -246,7 +276,6 @@ export const scrapeDiscoverInitial = inngest.createFunction(
 
           if (!insertedVideos || insertedVideos.length === 0) return
 
-          // Disparar evento de download para cada vídeo
           const events = insertedVideos.map((v: { id: string }) => ({
             name: 'media/download.normal' as const,
             data: { video_id: v.id },
@@ -258,10 +287,9 @@ export const scrapeDiscoverInitial = inngest.createFunction(
     }
 
     // -----------------------------------------------------------------------
-    // 4. Finalizar: atualizar influenciador e limpar checkpoint
+    // 4. Finalizar
     // -----------------------------------------------------------------------
     await step.run('finalize', async () => {
-      // Contar total de vídeos no banco
       const { count } = await supabaseAdmin
         .from('videos')
         .select('*', { count: 'exact', head: true })
@@ -270,11 +298,11 @@ export const scrapeDiscoverInitial = inngest.createFunction(
       await supabaseAdmin
         .from('influenciadores')
         .update({
-          status_pipeline: 'processando', // Agora aguarda transcrições
-          modo_atual: 'monitoramento',    // Próximas execuções serão monitor
+          status_pipeline: 'processando',
+          modo_atual: 'monitoramento',
           ultimo_scraping_at: new Date().toISOString(),
           total_videos: count || 0,
-          checkpoint_scraping: {},         // Limpar checkpoint
+          checkpoint_scraping: {},
         })
         .eq('id', influencer_id)
     })

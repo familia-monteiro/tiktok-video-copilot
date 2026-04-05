@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { PainelConhecimento } from '@/components/dashboard/painel-conhecimento'
 import { PipelineStatusBadge } from '@/components/dashboard/pipeline-status'
 import { InfluenciadorVideos } from '@/components/dashboard/influenciador-videos'
+import { PipelineMonitor } from '@/components/dashboard/pipeline-monitor'
 
 export const dynamic = 'force-dynamic'
 
@@ -112,6 +113,9 @@ export default async function InfluenciadorPage({ params }: Props) {
         <MetricCard label="Transcritos" value={transcritos} />
         <MetricCard label="Virais" value={totalVirais ?? 0} />
       </div>
+
+      {/* Monitor em tempo real */}
+      <PipelineMonitor influencer={influencer} />
 
       {/* Painel de Conhecimento */}
       <PainelConhecimento
