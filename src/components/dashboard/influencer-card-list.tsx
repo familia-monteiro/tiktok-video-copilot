@@ -13,7 +13,6 @@ import { supabase } from '@/lib/supabase/client'
 import { PipelineStatusBadge } from '@/components/dashboard/pipeline-status'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
-import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -241,15 +240,11 @@ function InfluencerCard({
                   {/* Botão de menu — stopPropagation para não navegar */}
                   <div onClick={(e) => e.preventDefault()} className="z-10 relative">
                     <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          disabled={loading !== null}
-                        >
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
+                      <DropdownMenuTrigger
+                        disabled={loading !== null}
+                        className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+                      >
+                        <MoreVertical className="h-4 w-4" />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-44">
                         {isPausado ? (
