@@ -2,15 +2,18 @@
 
 /**
  * Monitor em tempo real do pipeline para um influenciador.
- * Mostra vídeos descobertos, checkpoint de scraping e log de eventos.
+ * Mostra fase atual, vídeos descobertos, checkpoint e log de eventos.
  */
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Progress } from '@/components/ui/progress'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  CheckCircle2, AlertCircle, Loader2, Clock,
+  Video, FileText, Brain, Wifi, WifiOff,
+} from 'lucide-react'
 import type { Influenciador } from '@/types/database'
 
 interface LogEntry {
@@ -27,47 +30,57 @@ interface VideoRow {
   criado_em: string
 }
 
-interface PipelineMonitorProps {
-  influencer: Influenciador
-}
+// Fases do pipeline em ordem
+const PHASES = [
+  { key: 'descobrindo', label: 'Coletando vídeos', icon: <Loader2 className="w-3.5 h-3.5 animate-spin" /> },
+  { key: 'processando', label: 'Baixando e transcrevendo', icon: <FileText className="w-3.5 h-3.5" /> },
+  { key: 'ativo', label: 'Analisando com IA', icon: <Brain className="w-3.5 h-3.5" /> },
+]
 
 const STATUS_COLORS: Record<string, string> = {
-  aguardando:        'text-muted-foreground',
-  baixando:          'text-blue-500',
-  baixado:           'text-blue-400',
-  audio_processando: 'text-purple-500',
-  audio_processado:  'text-purple-400',
-  transcrevendo:     'text-orange-500',
-  transcrito:        'text-yellow-500',
-  analisando:        'text-cyan-500',
-  analisado:         'text-green-500',
-  falha_download:    'text-red-500',
-  falha_transcricao: 'text-red-500',
-  indisponivel:      'text-gray-500',
+  aguardando:        'text-muted-foreground/60',
+  baixando:          'text-blue-400',
+  baixado:           'text-blue-300',
+  audio_processando: 'text-purple-400',
+  audio_processado:  'text-purple-300',
+  transcrevendo:     'text-orange-400',
+  transcrito:        'text-yellow-400',
+  analisando:        'text-cyan-400',
+  analisado:         'text-emerald-400',
+  falha_download:    'text-red-400',
+  falha_transcricao: 'text-red-400',
+  indisponivel:      'text-gray-400',
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  aguardando:        'aguardando download',
-  baixando:          'baixando vídeo...',
-  baixado:           'vídeo baixado',
-  audio_processando: 'separando áudio...',
-  audio_processado:  'áudio separado',
-  transcrevendo:     'transcrevendo...',
+  aguardando:        'aguardando',
+  baixando:          'baixando…',
+  baixado:           'baixado',
+  audio_processando: 'separando áudio…',
+  audio_processado:  'áudio pronto',
+  transcrevendo:     'transcrevendo…',
   transcrito:        'transcrito',
-  analisando:        'analisando...',
+  analisando:        'analisando…',
   analisado:         'analisado ✓',
   falha_download:    'falha no download',
   falha_transcricao: 'falha na transcrição',
   indisponivel:      'indisponível',
 }
 
-export function PipelineMonitor({ influencer: initial }: PipelineMonitorProps) {
+const LOG_COLORS: Record<LogEntry['type'], string> = {
+  info:    'text-foreground/70',
+  success: 'text-emerald-400',
+  error:   'text-red-400',
+  warning: 'text-amber-400',
+}
+
+export function PipelineMonitor({ influencer: initial }: { influencer: Influenciador }) {
   const [influencer, setInfluencer] = useState<Influenciador>(initial)
   const [videos, setVideos] = useState<VideoRow[]>([])
   const [log, setLog] = useState<LogEntry[]>([])
   const [videoTotal, setVideoTotal] = useState(0)
+  const [connected, setConnected] = useState(true)
 
-  // Carregar vídeos recentes
   useEffect(() => {
     async function load() {
       const { data, count } = await supabase
@@ -75,7 +88,7 @@ export function PipelineMonitor({ influencer: initial }: PipelineMonitorProps) {
         .select('id, tiktok_video_id, status, criado_em', { count: 'exact' })
         .eq('influencer_id', initial.id)
         .order('criado_em', { ascending: false })
-        .limit(50)
+        .limit(100)
 
       setVideos((data as VideoRow[]) ?? [])
       setVideoTotal(count ?? 0)
@@ -83,44 +96,40 @@ export function PipelineMonitor({ influencer: initial }: PipelineMonitorProps) {
     load()
   }, [initial.id])
 
-  // Realtime: influenciador (status, checkpoint)
+  // Realtime: influenciador
   useEffect(() => {
     const ch = supabase
       .channel(`monitor-influencer-${initial.id}`)
       .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'influenciadores',
+        event: 'UPDATE', schema: 'public', table: 'influenciadores',
         filter: `id=eq.${initial.id}`,
       }, (payload) => {
         const updated = payload.new as Influenciador
         setInfluencer(updated)
-        addLog(`Status atualizado: ${updated.status_pipeline}`, 'info')
+        addLog(`Status: ${updated.status_pipeline}`, 'info')
       })
-      .subscribe()
+      .subscribe((status) => {
+        setConnected(status === 'SUBSCRIBED')
+      })
 
     return () => { supabase.removeChannel(ch) }
   }, [initial.id])
 
-  // Realtime: vídeos (INSERT = descoberto, UPDATE = progresso)
+  // Realtime: vídeos
   useEffect(() => {
     const ch = supabase
       .channel(`monitor-videos-${initial.id}`)
       .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'videos',
+        event: 'INSERT', schema: 'public', table: 'videos',
         filter: `influencer_id=eq.${initial.id}`,
       }, (payload) => {
         const v = payload.new as VideoRow
-        setVideos((prev) => [v, ...prev].slice(0, 50))
+        setVideos((prev) => [v, ...prev].slice(0, 100))
         setVideoTotal((n) => n + 1)
         addLog(`Descoberto: ${v.tiktok_video_id}`, 'info')
       })
       .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'videos',
+        event: 'UPDATE', schema: 'public', table: 'videos',
         filter: `influencer_id=eq.${initial.id}`,
       }, (payload) => {
         const v = payload.new as VideoRow
@@ -141,16 +150,13 @@ export function PipelineMonitor({ influencer: initial }: PipelineMonitorProps) {
   }, [initial.id])
 
   function addLog(message: string, type: LogEntry['type']) {
-    const entry: LogEntry = {
+    setLog((prev) => [{
       id: `${Date.now()}-${Math.random()}`,
       timestamp: new Date().toISOString(),
-      message,
-      type,
-    }
-    setLog((prev) => [entry, ...prev].slice(0, 200))
+      message, type,
+    }, ...prev].slice(0, 200))
   }
 
-  // Dados do checkpoint
   const checkpoint = influencer.checkpoint_scraping as Record<string, unknown> | null
   const checkpointTotal = typeof checkpoint?.total_coletados === 'number' ? checkpoint.total_coletados : null
   const checkpointBatch = typeof checkpoint?.batch_number === 'number' ? checkpoint.batch_number : null
@@ -159,66 +165,148 @@ export function PipelineMonitor({ influencer: initial }: PipelineMonitorProps) {
   const transcritos = videos.filter((v) => v.status === 'transcrito').length
   const progressPercent = videoTotal > 0 ? Math.round((analisados / videoTotal) * 100) : 0
 
+  const status = influencer.status_pipeline
+  const isActive = ['descobrindo', 'processando'].includes(status)
+  const isErro = status === 'erro'
+  const erroMsg = isErro ? checkpoint?.erro as string | undefined : undefined
+
+  // Determinar fase atual para mostrar no stepper
+  const currentPhaseIdx = status === 'descobrindo' ? 0 : status === 'processando' ? 1 : status === 'ativo' ? 2 : -1
+
   return (
     <div className="space-y-4">
-      {/* Status geral */}
-      <Card>
-        <CardHeader className="pb-2 pt-4 px-4">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium">Pipeline em tempo real</CardTitle>
-            <StatusDot status={influencer.status_pipeline} />
-          </div>
-        </CardHeader>
-        <CardContent className="px-4 pb-4 space-y-3">
-          <div className="grid grid-cols-3 gap-3 text-center">
-            <div>
-              <p className="text-xl font-bold">{videoTotal}</p>
-              <p className="text-xs text-muted-foreground">descobertos</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold">{transcritos}</p>
-              <p className="text-xs text-muted-foreground">transcritos</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold">{analisados}</p>
-              <p className="text-xs text-muted-foreground">analisados</p>
-            </div>
-          </div>
+      {/* Cabeçalho: status + realtime indicator */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-foreground">Monitor do Pipeline</h2>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          {connected
+            ? <><Wifi className="w-3.5 h-3.5 text-emerald-500" /> Tempo real</>
+            : <><WifiOff className="w-3.5 h-3.5 text-red-400" /> Reconectando…</>
+          }
+        </div>
+      </div>
 
-          <div>
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-muted-foreground">Progresso de análise</span>
-              <span>{progressPercent}%</span>
+      {/* Bloco de erro */}
+      {isErro && (
+        <Card className="border-red-500/30 bg-red-500/[0.03]">
+          <CardContent className="px-4 py-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-500">Falha no pipeline</p>
+                {erroMsg && <p className="text-xs text-red-400/80 mt-0.5">{erroMsg}</p>}
+                <p className="text-xs text-muted-foreground mt-1">Use o menu do card para retentar a coleta.</p>
+              </div>
             </div>
-            <Progress value={progressPercent} className="h-1.5" />
-          </div>
+          </CardContent>
+        </Card>
+      )}
 
-          {checkpointTotal !== null && (
-            <p className="text-xs text-muted-foreground">
-              Checkpoint: {checkpointTotal} vídeos coletados
-              {checkpointBatch !== null && ` · batch ${checkpointBatch}`}
+      {/* Cards de métricas */}
+      <div className="grid grid-cols-3 gap-3">
+        <MetricCard
+          icon={<Video className="w-4 h-4" />}
+          label="Descobertos"
+          value={videoTotal}
+          active={status === 'descobrindo'}
+        />
+        <MetricCard
+          icon={<FileText className="w-4 h-4" />}
+          label="Transcritos"
+          value={transcritos}
+          active={status === 'processando'}
+        />
+        <MetricCard
+          icon={<Brain className="w-4 h-4" />}
+          label="Analisados"
+          value={analisados}
+          active={status === 'ativo'}
+          highlight
+        />
+      </div>
+
+      {/* Progresso geral */}
+      {videoTotal > 0 && (
+        <Card>
+          <CardContent className="px-4 py-3 space-y-2">
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Progresso total de análise</span>
+              <span className="font-semibold tabular-nums">{progressPercent}%</span>
+            </div>
+            <Progress value={progressPercent} className="h-2" />
+            {checkpointTotal !== null && (
+              <p className="text-xs text-muted-foreground">
+                Checkpoint: {checkpointTotal} vídeos coletados
+                {checkpointBatch !== null && ` · batch ${checkpointBatch}`}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Stepper de fases (só quando ativo) */}
+      {(isActive || status === 'ativo') && (
+        <Card>
+          <CardContent className="px-4 py-3">
+            <div className="flex items-center gap-1">
+              {PHASES.map((phase, idx) => {
+                const done = idx < currentPhaseIdx
+                const current = idx === currentPhaseIdx
+                return (
+                  <div key={phase.key} className="flex items-center flex-1 min-w-0">
+                    <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      done ? 'text-emerald-500 bg-emerald-500/10' :
+                      current ? 'text-blue-500 bg-blue-500/10' :
+                      'text-muted-foreground/50'
+                    }`}>
+                      {done ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : phase.icon}
+                      <span className="truncate hidden sm:block">{phase.label}</span>
+                    </div>
+                    {idx < PHASES.length - 1 && (
+                      <div className={`h-px flex-1 mx-1 ${done ? 'bg-emerald-500/30' : 'bg-border'}`} />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Estado inicial: nenhuma atividade ainda */}
+      {!isActive && status !== 'ativo' && !isErro && videoTotal === 0 && (
+        <Card className="border-dashed">
+          <CardContent className="px-4 py-8 text-center">
+            <Clock className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">Aguardando início do pipeline</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">
+              {status === 'pendente'
+                ? 'A coleta de vídeos ainda não foi iniciada.'
+                : status === 'pausado'
+                ? 'O pipeline está pausado. Retome pelo menu do card.'
+                : 'Nenhuma atividade registrada.'
+              }
             </p>
-          )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* Vídeos recentes */}
+      {/* Lista de vídeos recentes */}
       {videos.length > 0 && (
         <Card>
           <CardHeader className="pb-2 pt-4 px-4">
-            <CardTitle className="text-sm font-medium">
-              Vídeos recentes ({videoTotal} total)
+            <CardTitle className="text-sm font-medium flex items-center justify-between">
+              Vídeos recentes
+              <span className="text-xs font-normal text-muted-foreground">{videoTotal} total</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4">
-            <ScrollArea className="h-48">
-              <ul className="space-y-1">
+            <ScrollArea className="h-52">
+              <ul className="space-y-1.5">
                 {videos.map((v) => (
-                  <li key={v.id} className="flex items-center justify-between text-xs gap-2">
-                    <span className="font-mono text-muted-foreground truncate max-w-[180px]">
-                      {v.tiktok_video_id}
-                    </span>
-                    <span className={STATUS_COLORS[v.status] ?? 'text-muted-foreground'}>
+                  <li key={v.id} className="flex items-center justify-between text-xs gap-3">
+                    <span className="font-mono text-muted-foreground truncate">{v.tiktok_video_id}</span>
+                    <span className={`shrink-0 ${STATUS_COLORS[v.status] ?? 'text-muted-foreground'}`}>
                       {STATUS_LABELS[v.status] ?? v.status}
                     </span>
                   </li>
@@ -232,29 +320,25 @@ export function PipelineMonitor({ influencer: initial }: PipelineMonitorProps) {
       {/* Log de eventos */}
       <Card>
         <CardHeader className="pb-2 pt-4 px-4">
-          <CardTitle className="text-sm font-medium">Log de eventos</CardTitle>
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            Log de eventos
+            {isActive && <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />}
+          </CardTitle>
         </CardHeader>
         <CardContent className="px-4 pb-4">
-          <ScrollArea className="h-40">
+          <ScrollArea className="h-36">
             {log.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                Aguardando eventos… Os eventos aparecerão aqui em tempo real quando o pipeline estiver ativo.
+              <p className="text-xs text-muted-foreground/60 italic">
+                Os eventos aparecerão aqui em tempo real quando o pipeline estiver ativo.
               </p>
             ) : (
               <ul className="space-y-1">
                 {log.map((entry) => (
                   <li key={entry.id} className="flex items-start gap-2 text-xs">
-                    <span className="text-muted-foreground shrink-0">
+                    <span className="text-muted-foreground/50 shrink-0 tabular-nums">
                       {new Date(entry.timestamp).toLocaleTimeString('pt-BR')}
                     </span>
-                    <span className={
-                      entry.type === 'error' ? 'text-red-500' :
-                      entry.type === 'success' ? 'text-green-500' :
-                      entry.type === 'warning' ? 'text-yellow-500' :
-                      'text-foreground'
-                    }>
-                      {entry.message}
-                    </span>
+                    <span className={LOG_COLORS[entry.type]}>{entry.message}</span>
                   </li>
                 ))}
               </ul>
@@ -266,20 +350,25 @@ export function PipelineMonitor({ influencer: initial }: PipelineMonitorProps) {
   )
 }
 
-function StatusDot({ status }: { status: string }) {
-  const isActive = ['descobrindo', 'processando', 'baixando', 'transcrevendo', 'analisando'].includes(status)
-  const isError = status === 'erro'
-  const isPaused = status === 'pausado'
-
+function MetricCard({
+  icon, label, value, active, highlight,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: number
+  active?: boolean
+  highlight?: boolean
+}) {
   return (
-    <div className="flex items-center gap-1.5">
-      <span className={`inline-block w-2 h-2 rounded-full ${
-        isError ? 'bg-red-500' :
-        isPaused ? 'bg-yellow-500' :
-        isActive ? 'bg-green-500 animate-pulse' :
-        'bg-muted-foreground'
-      }`} />
-      <Badge variant="outline" className="text-xs">{status}</Badge>
-    </div>
+    <Card className={active ? 'border-blue-500/30 bg-blue-500/[0.02]' : ''}>
+      <CardContent className="p-3 text-center">
+        <div className={`flex justify-center mb-1.5 ${active ? 'text-blue-500' : highlight && value > 0 ? 'text-emerald-500' : 'text-muted-foreground/50'}`}>
+          {icon}
+        </div>
+        <p className={`text-xl font-bold tabular-nums ${highlight && value > 0 ? 'text-emerald-500' : ''}`}>{value}</p>
+        <p className="text-[10px] text-muted-foreground mt-0.5">{label}</p>
+        {active && <div className="mt-1.5 h-0.5 rounded-full bg-blue-500/30 overflow-hidden"><div className="h-full bg-blue-500 animate-[progress_2s_ease-in-out_infinite]" style={{ width: '60%' }} /></div>}
+      </CardContent>
+    </Card>
   )
 }

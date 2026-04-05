@@ -57,6 +57,19 @@ export const scrapeDiscoverInitial = inngest.createFunction(
   async ({ event, step }) => {
     const { influencer_id } = event.data as { influencer_id: string }
 
+    // Wrapper de erro: qualquer falha atualiza status para 'erro' com mensagem
+    const markError = async (msg: string) => {
+      try {
+        await supabaseAdmin
+          .from('influenciadores')
+          .update({
+            status_pipeline: 'erro',
+            checkpoint_scraping: { erro: msg, erro_em: new Date().toISOString() },
+          })
+          .eq('id', influencer_id)
+      } catch { /* ignora erro secundário */ }
+    }
+
     // -----------------------------------------------------------------------
     // 1. Carregar influenciador e atualizar status para 'descobrindo'
     // -----------------------------------------------------------------------
@@ -131,7 +144,9 @@ export const scrapeDiscoverInitial = inngest.createFunction(
 
         if (!res.ok) {
           const text = await res.text().catch(() => '')
-          throw new Error(`Worker VPS retornou ${res.status}: ${text}`)
+          const msg = `Worker VPS retornou ${res.status}: ${text}`
+          await markError(msg)
+          throw new Error(msg)
         }
 
         return id
@@ -145,10 +160,9 @@ export const scrapeDiscoverInitial = inngest.createFunction(
       })
 
       if (!batchEvent) {
-        throw new Error(
-          `Timeout: worker VPS não respondeu em 15min para batch ${batchNumber} ` +
-          `de @${influencer.tiktok_handle}`
-        )
+        const msg = `Timeout: worker VPS não respondeu em 15min (batch ${batchNumber}, @${influencer.tiktok_handle})`
+        await markError(msg)
+        throw new Error(msg)
       }
 
       const batchResult = batchEvent.data as ScrapeBatchResult
@@ -199,9 +213,9 @@ export const scrapeDiscoverInitial = inngest.createFunction(
       }
 
       if (!batchResult.success) {
-        throw new Error(
-          `Worker VPS reportou falha no batch ${batchNumber}: ${batchResult.error ?? 'erro desconhecido'}`
-        )
+        const msg = `Worker VPS reportou falha: ${batchResult.error ?? 'erro desconhecido'}`
+        await markError(msg)
+        throw new Error(msg)
       }
 
       // -------------------------------------------------------------------
