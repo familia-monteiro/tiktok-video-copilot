@@ -6,7 +6,11 @@ const nextConfig: NextConfig = {
     'playwright-extra',
     'playwright-core',
     'puppeteer-extra-plugin-stealth',
+    'puppeteer-extra-plugin',
     'puppeteer-extra',
+    'merge-deep',
+    'clone-deep',
+    'is-plain-object',
     'inngest',
   ],
   images: {
