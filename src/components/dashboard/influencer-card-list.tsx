@@ -31,7 +31,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import type { Influenciador } from '@/types/database'
+import type { Influenciador, StatusPipeline } from '@/types/database'
 
 interface InfluencerCardListProps {
   influencers: Influenciador[]
@@ -78,7 +78,7 @@ export function InfluencerCardList({ influencers: initial }: InfluencerCardListP
     setInfluencers((prev) => prev.filter((inf) => inf.id !== id))
   }
 
-  function handleStatusChange(id: string, newStatus: string) {
+  function handleStatusChange(id: string, newStatus: StatusPipeline) {
     setInfluencers((prev) =>
       prev.map((inf) => inf.id === id ? { ...inf, status_pipeline: newStatus } : inf)
     )
@@ -118,7 +118,7 @@ function InfluencerCard({
 }: {
   influencer: Influenciador
   onRemove: (id: string) => void
-  onStatusChange: (id: string, status: string) => void
+  onStatusChange: (id: string, status: StatusPipeline) => void
 }) {
   const [videoCount, setVideoCount] = useState<number | null>(null)
   const [transcribedCount, setTranscribedCount] = useState<number | null>(null)
@@ -176,7 +176,7 @@ function InfluencerCard({
         return
       }
 
-      onStatusChange(influencer.id, data.status_pipeline ?? (action === 'pausar' ? 'pausado' : 'ativo'))
+      onStatusChange(influencer.id, (data.status_pipeline ?? (action === 'pausar' ? 'pausado' : 'ativo')) as StatusPipeline)
       toast.success(action === 'pausar' ? 'Análise pausada' : 'Análise retomada', {
         description: `@${influencer.tiktok_handle}`,
       })
