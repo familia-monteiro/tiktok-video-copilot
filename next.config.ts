@@ -7,6 +7,7 @@ const nextConfig: NextConfig = {
     'playwright-core',
     'puppeteer-extra-plugin-stealth',
     'puppeteer-extra',
+    'inngest',
   ],
   images: {
     remotePatterns: [
