@@ -15,6 +15,7 @@
 
 import { inngest } from '@/lib/inngest/client'
 import { supabaseAdmin } from '@/lib/supabase/server'
+import { getConfigs } from '@/lib/config/get-config'
 
 type VideoMetadata = {
   tiktok_video_id: string
@@ -64,6 +65,23 @@ export const scrapeDiscoverMonitor = inngest.createFunction(
     const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://roteiros.tiktok.superapps.ai'
     const callbackUrl = `${siteUrl}/api/internal/scrape-complete`
 
+    const proxyConfig = await step.run('get-proxy-config', async () => {
+      const configs = await getConfigs([
+        'decodo_host',
+        'decodo_port_from',
+        'decodo_username',
+        'decodo_password',
+      ])
+
+      const host = configs.decodo_host || process.env.DECODO_SERVER || 'br.decodo.com'
+      const port_from = parseInt(configs.decodo_port_from || '10001', 10) || 10001
+      const port_to = parseInt(configs.decodo_port_to || '10010', 10) || 10010
+      const username = configs.decodo_username || process.env.DECODO_USERNAME || 'fallback_user'
+      const password = configs.decodo_password || process.env.DECODO_PASSWORD || 'fallback_pass'
+
+      return { host, port_from, port_to, username, password }
+    })
+
     // -----------------------------------------------------------------------
     // 2. Processar cada influenciador sequencialmente
     // -----------------------------------------------------------------------
@@ -95,11 +113,17 @@ export const scrapeDiscoverMonitor = inngest.createFunction(
           body: JSON.stringify({
             job_id: id,
             influencer_id: influencer.id,
-            handle: influencer.tiktok_handle,
+            tiktok_handle: influencer.tiktok_handle,
             mode: 'monitor',
             max_videos: 50,
-            known_video_ids: Array.from(knownIds),
+            checkpoint: {
+              posicao_scroll: 0,
+              ultimo_video_id: null,
+              total_coletados: 0,
+              known_ids: Array.from(knownIds)
+            },
             callback_url: callbackUrl,
+            proxy: proxyConfig,
           }),
         })
 
