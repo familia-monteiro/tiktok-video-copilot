@@ -1,15 +1,13 @@
 /**
  * Job: media.download.priority
- * Idêntico ao media.download.normal, mas com prioridade máxima na fila.
- * Usado para vídeos virais (viral_score >= 70).
+ * Solicitamos à VPS o download prioritário de vídeo (virais).
  *
  * Referência: Seções 8, 26 do Master Plan v3.0
- * Seção 26: "manter duas filas separadas — media.download.priority e media.download.normal.
- *            Vídeos virais vão para priority, os demais para normal."
  */
 
 import { inngest } from '@/lib/inngest/client'
-import { runDownloadPipeline } from '@/lib/scraper/download-pipeline'
+import { requestDownloadOnVPS } from '@/lib/scraper/download-pipeline'
+import { supabaseAdmin } from '@/lib/supabase/server'
 
 export const mediaDownloadPriority = inngest.createFunction(
   {
@@ -21,23 +19,60 @@ export const mediaDownloadPriority = inngest.createFunction(
   async ({ event, step }) => {
     const { video_id } = event.data as { video_id: string }
 
-    const result = await step.run('download-video-priority', async () => {
-      return runDownloadPipeline(video_id)
+    const tentativas = await step.run('start-download-vps-priority', async () => {
+      return requestDownloadOnVPS(video_id)
     })
 
-    if (result.status === 'falha_download') {
-      throw new Error(`Download prioritário falhou (tentativa ${result.tentativas}): ${result.erro}`)
-    }
+    // Aguardar callback assíncrono da VPS (máx 15 minutos)
+    const downloadEventPayload = await step.waitForEvent(`wait-priority-download-${video_id}`, {
+      event: 'download.complete',
+      timeout: '15m',
+      if: `async.data.video_id == "${video_id}"`,
+    })
 
-    if (result.status === 'baixado') {
-      await step.run('dispatch-audio-separate', async () => {
-        await inngest.send({
-          name: 'audio/separate',
-          data: { video_id },
-        })
+    if (!downloadEventPayload) {
+      const msg = `Timeout: VPS não enviou callback de download prioritário em 15min para o vídeo ${video_id}`
+      await step.run('mark-timeout', async () => {
+        await supabaseAdmin.from('videos').update({
+          status: 'falha_download',
+          erro_log: msg,
+          atualizado_em: new Date().toISOString()
+        }).eq('id', video_id)
       })
+      throw new Error(msg)
     }
 
-    return result
+    const result = downloadEventPayload.data
+
+    if (!result.success) {
+      const msg = `Download prioritário falhou (tentativa ${tentativas}): ${result.error_message || 'erro desconhecido'}`
+      await step.run('mark-error', async () => {
+        await supabaseAdmin.from('videos').update({
+          status: 'falha_download',
+          erro_log: result.error_message,
+          atualizado_em: new Date().toISOString()
+        }).eq('id', video_id)
+      })
+      throw new Error(msg)
+    }
+
+    // Sucesso
+    await step.run('mark-success', async () => {
+      await supabaseAdmin.from('videos').update({
+        status: 'baixado',
+        erro_log: null,
+        atualizado_em: new Date().toISOString()
+      }).eq('id', video_id)
+    })
+
+    // Disparar separação de áudio
+    await step.run('dispatch-audio-separate', async () => {
+      await inngest.send({
+        name: 'audio/separate',
+        data: { video_id },
+      })
+    })
+
+    return { status: 'baixado', tentativas }
   }
 )

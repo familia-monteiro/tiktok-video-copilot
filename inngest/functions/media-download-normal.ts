@@ -1,26 +1,13 @@
 /**
  * Job: media.download.normal
- * Download de vídeo via yt-dlp para vídeos normais (não virais).
+ * Solicitamos à VPS o download de vídeo (não virais).
  *
  * Referência: Seção 8 do Master Plan v3.0
- *
- * Regras:
- * - SEM proxy — download direto na CDN (Seção 6)
- * - Qualidade máxima 720p
- * - Verificar integridade (tamanho > 0)
- * - Upload para Supabase Storage
- * - HTTP 404/410 → 'indisponivel' imediato, sem retry
- * - Ao concluir com sucesso: disparar evento 'audio/separate'
- *
- * Política de retry (Seção 30):
- *   Tentativa 1: imediata
- *   Tentativa 2: 2 min
- *   Tentativa 3: 8 min
- *   Tentativa 4: 32 min
  */
 
 import { inngest } from '@/lib/inngest/client'
-import { runDownloadPipeline } from '@/lib/scraper/download-pipeline'
+import { requestDownloadOnVPS } from '@/lib/scraper/download-pipeline'
+import { supabaseAdmin } from '@/lib/supabase/server'
 
 export const mediaDownloadNormal = inngest.createFunction(
   {
@@ -32,25 +19,60 @@ export const mediaDownloadNormal = inngest.createFunction(
   async ({ event, step }) => {
     const { video_id } = event.data as { video_id: string }
 
-    const result = await step.run('download-video', async () => {
-      return runDownloadPipeline(video_id)
+    const tentativas = await step.run('start-download-vps', async () => {
+      return requestDownloadOnVPS(video_id)
     })
 
-    // Se download falhou (com erro — não indisponível), propagar para retry
-    if (result.status === 'falha_download') {
-      throw new Error(`Download falhou (tentativa ${result.tentativas}): ${result.erro}`)
-    }
+    // Aguardar callback assíncrono da VPS (máx 15 minutos)
+    const downloadEventPayload = await step.waitForEvent(`wait-download-${video_id}`, {
+      event: 'download.complete',
+      timeout: '15m',
+      if: `async.data.video_id == "${video_id}"`,
+    })
 
-    // Se baixado com sucesso: disparar separação de áudio
-    if (result.status === 'baixado') {
-      await step.run('dispatch-audio-separate', async () => {
-        await inngest.send({
-          name: 'audio/separate',
-          data: { video_id },
-        })
+    if (!downloadEventPayload) {
+      const msg = `Timeout: VPS não enviou callback de download em 15min para o vídeo ${video_id}`
+      await step.run('mark-timeout', async () => {
+        await supabaseAdmin.from('videos').update({
+          status: 'falha_download',
+          erro_log: msg,
+          atualizado_em: new Date().toISOString()
+        }).eq('id', video_id)
       })
+      throw new Error(msg)
     }
 
-    return result
+    const result = downloadEventPayload.data
+
+    if (!result.success) {
+      const msg = `Download falhou (tentativa ${tentativas}): ${result.error_message || 'erro desconhecido'}`
+      await step.run('mark-error', async () => {
+        await supabaseAdmin.from('videos').update({
+          status: 'falha_download',
+          erro_log: result.error_message,
+          atualizado_em: new Date().toISOString()
+        }).eq('id', video_id)
+      })
+      throw new Error(msg)
+    }
+
+    // Sucesso
+    await step.run('mark-success', async () => {
+      await supabaseAdmin.from('videos').update({
+        status: 'baixado',
+        erro_log: null,
+        atualizado_em: new Date().toISOString()
+      }).eq('id', video_id)
+    })
+
+    // Disparar separação de áudio
+    await step.run('dispatch-audio-separate', async () => {
+      await inngest.send({
+        name: 'audio/separate',
+        data: { video_id },
+      })
+    })
+
+    return { status: 'baixado', tentativas }
   }
 )
