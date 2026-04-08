@@ -91,7 +91,16 @@ async function extractVideoData(
   if (!match) return null
 
   const tiktok_video_id = match[1]
-  const url = `https://www.tiktok.com${itemElement.href}`
+
+  // Normalizar a URL: o href pode ser relativo (/@handle/video/ID)
+  // ou absoluto (https://www.tiktok.com/@handle/video/ID).
+  // Evitar duplicação como "https://www.tiktok.comhttps://..."
+  let url: string
+  if (itemElement.href.startsWith('http')) {
+    url = itemElement.href
+  } else {
+    url = `https://www.tiktok.com${itemElement.href}`
+  }
 
   return {
     tiktok_video_id,
@@ -101,6 +110,7 @@ async function extractVideoData(
     data_publicacao: itemElement.time,
   }
 }
+
 
 /**
  * Coleta todos os itens de vídeo visíveis na página no momento.
