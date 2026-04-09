@@ -118,7 +118,7 @@ export const audioTranscribe = inngest.createFunction(
       const filename = parts[2] || `${video.tiktok_video_id}.mp3`
 
       const { data: mp3Data, error } = await supabaseAdmin.storage
-        .from('audios')
+        .from('audio')
         .download(`${influencer_id}/${filename}`)
 
       if (error || !mp3Data) {
@@ -278,7 +278,7 @@ export const audioTranscribe = inngest.createFunction(
       const filename = parts[2] || `${video.tiktok_video_id}.mp3`
 
       const { error } = await supabaseAdmin.storage
-        .from('audios')
+        .from('audio')
         .remove([`${influencer_id}/${filename}`])
 
       if (error) {
