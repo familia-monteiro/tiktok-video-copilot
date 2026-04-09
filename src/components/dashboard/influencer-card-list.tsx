@@ -277,7 +277,7 @@ function InfluencerCard({
                 </div>
 
                 {/* Menu */}
-                <div onClick={(e) => e.preventDefault()} className="z-10 relative shrink-0">
+                <div onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="z-10 relative shrink-0">
                   <DropdownMenu>
                     <DropdownMenuTrigger
                       disabled={loading !== null}
