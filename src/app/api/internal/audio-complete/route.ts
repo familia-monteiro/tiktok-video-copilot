@@ -13,6 +13,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { supabaseAdmin } from '@/lib/supabase/server'
 import { inngest } from '@/lib/inngest/client'
+import { getConfig } from '@/lib/config/get-config'
 
 const CallbackSchema = z.object({
   video_id: z.string().uuid(),
@@ -22,9 +23,14 @@ const CallbackSchema = z.object({
 })
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  // Autenticar request do worker
+  // Autenticar request do worker — secret vem do banco (decriptado)
   const secret = request.headers.get('x-worker-secret')
-  if (!secret || secret !== process.env.RAILWAY_WORKER_SECRET) {
+  if (!secret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const expectedSecret = await getConfig('railway_worker_secret')
+  if (!expectedSecret || secret !== expectedSecret) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

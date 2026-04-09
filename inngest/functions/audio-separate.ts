@@ -46,7 +46,9 @@ export const audioSeparate = inngest.createFunction(
       return data
     })
 
-    const storageVideoPath = `${video.influencer_id}/${video.tiktok_video_id}.mp4`
+    // A VPS salva o arquivo no Storage como {influencer_id}/{video_uuid}.mp4
+    // O Railway Worker espera o path com o prefixo do bucket: videos/{influencer_id}/{video_uuid}.mp4
+    const storageVideoPath = `videos/${video.influencer_id}/${video.id}.mp4`
 
     // Enviar para o Worker Railway
     await step.run('dispatch-to-worker', async () => {
@@ -59,6 +61,8 @@ export const audioSeparate = inngest.createFunction(
         throw new Error('Railway Worker URL ou Secret não configurados. Configure no painel de Configurações.')
       }
 
+      const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://roteiros.tiktok.superapps.ai'
+
       const response = await fetch(`${workerUrl}/process`, {
         method: 'POST',
         headers: {
@@ -68,6 +72,7 @@ export const audioSeparate = inngest.createFunction(
         body: JSON.stringify({
           video_id,
           storage_path: storageVideoPath,
+          callback_url: `${siteUrl}/api/internal/audio-complete`,
         }),
       })
 
