@@ -111,7 +111,7 @@ export const audioTranscribe = inngest.createFunction(
     // -----------------------------------------------------------------------
     // 2. Baixar MP3 do Storage para /tmp/
     // -----------------------------------------------------------------------
-    const localMp3Path = await step.run('download-mp3', async () => {
+    const audioData = await step.run('download-mp3', async () => {
       // Extrair influencer_id e video_id do storage_path
       const parts = audio_storage_path.split('/')
       const influencer_id = parts[1] || video.influencer_id
@@ -125,11 +125,15 @@ export const audioTranscribe = inngest.createFunction(
         throw new Error(`Falha ao baixar MP3 do Storage: ${error?.message}`)
       }
 
-      const tmpPath = path.join(os.tmpdir(), `${video.tiktok_video_id}_vocal.mp3`)
+      const fileExt = filename.endsWith('.wav') ? '.wav' : '.mp3'
+      const tmpPath = path.join(os.tmpdir(), `${video.tiktok_video_id}_vocal${fileExt}`)
       const buffer = Buffer.from(await mp3Data.arrayBuffer())
       fs.writeFileSync(tmpPath, buffer)
 
-      return tmpPath
+      return {
+        localPath: tmpPath,
+        mimeType: fileExt === '.wav' ? 'audio/wav' : 'audio/mpeg',
+      }
     })
 
     // -----------------------------------------------------------------------
@@ -137,7 +141,7 @@ export const audioTranscribe = inngest.createFunction(
     //    Retry único se parse falhar (Seção 10)
     // -----------------------------------------------------------------------
     const transcricaoResult = await step.run('transcribe-with-gemini', async () => {
-      const audioBytes = fs.readFileSync(localMp3Path)
+      const audioBytes = fs.readFileSync(audioData.localPath)
       const base64Audio = audioBytes.toString('base64')
 
       const duracao = video.duracao_segundos || 0
@@ -152,7 +156,7 @@ export const audioTranscribe = inngest.createFunction(
             parts: [
               {
                 inlineData: {
-                  mimeType: 'audio/mpeg',
+                  mimeType: audioData.mimeType,
                   data: base64Audio,
                 },
               },
@@ -178,7 +182,7 @@ export const audioTranscribe = inngest.createFunction(
             parts: [
               {
                 inlineData: {
-                  mimeType: 'audio/mpeg',
+                  mimeType: audioData.mimeType,
                   data: base64Audio,
                 },
               },
@@ -268,8 +272,8 @@ export const audioTranscribe = inngest.createFunction(
     // -----------------------------------------------------------------------
     await step.run('cleanup', async () => {
       // Deletar arquivo local
-      if (fs.existsSync(localMp3Path)) {
-        fs.unlinkSync(localMp3Path)
+      if (fs.existsSync(audioData.localPath)) {
+        fs.unlinkSync(audioData.localPath)
       }
 
       // Deletar MP3 do Supabase Storage
